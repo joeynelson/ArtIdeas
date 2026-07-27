@@ -278,6 +278,8 @@
   let W = 0, H = 0, dpr = 1;
   let clock = 123.4, paused = false, seed = 0.37;
   let twistPhase = 0, twist = 0;      // sway phase advances at P.sway, in mHz
+  let twistVel = 0, twistLag = 0, twistLive = false;   // spring state; lag is s of delay per unit radius
+  let rotPhase = 0;                   // the base rotation swings like a pendulum
 
   /* ================================================================
      Seeds — three spiral families, sheared by an animated twist.
@@ -299,13 +301,12 @@
     // just over half the diagonal: the disc has to reach past the corners,
     // but any more than that spends seeds off-screen
     const maxR = diag * 0.56 * (1 + 0.035 * Math.sin(t * 0.21 + seed * TAU));
-    const rot = t * 0.11 + seed * TAU;
+    // the piece rocks back and forth rather than spinning on forever
+    const rot = 1.1 * Math.sin(rotPhase) + seed * TAU;
     grainRot = rot;   // the twist shear dies out at r=0, so the centre tiles turn at exactly rot
-    /* The twist swings symmetrically through zero: the spiral shears one way,
-       unwinds to an untwisted phyllotaxis, then shears the opposite way. The
-       phase is accumulated in the frame loop rather than derived from the clock,
-       so moving the sway slider changes rate without jumping position. */
-    twist = P.twist * Math.sin(twistPhase + seed * 5.1);
+    /* twist and twistVel are integrated in the frame loop: the twist is a
+       weight on a spring chasing the sway drive, so it carries momentum,
+       overshoots on every reversal and rings down between them. */
     const mode = P.spiral;
     const arms = mode === 'phyllo' ? 1 : P.arms;
     const per = Math.ceil(n / arms);
@@ -327,10 +328,13 @@
       const r = mode === 'log'
         ? maxR * (Math.exp(expK * u) - 1) / expD
         : maxR * Math.sqrt(u);
-      th += rot + twist * (r / maxR);
+      const ru = r / maxR;
+      // the rim sees the twist a moment later than the core, so a fast
+      // reversal bows the outer tiles backward like the tip of a whip
+      th += rot + (twist - twistVel * twistLag * ru) * ru;
       const x = cx + Math.cos(th) * r, y = cy + Math.sin(th) * r;
       xs[i] = x; ys[i] = y;
-      cu[i] = r / maxR;
+      cu[i] = ru;
       ca[i] = Math.atan2(y - cy, x - cx) / TAU;   // -0.5 … 0.5
     }
     spacing = maxR / Math.sqrt(Math.max(n, 1));
@@ -652,9 +656,25 @@
       || Math.abs(ptr.want - ptr.k) > 0.002;
 
     if (moving) {
-      clock += dt * P.speed;
-      twistPhase += dt * P.speed * TAU * P.sway / 1000;   // sway is in millihertz
+      const h = dt * P.speed;
+      clock += h;
+      rotPhase += h * 0.1;                                // ~63 s to rock there and back
+      if (rotPhase > TAU) rotPhase -= TAU;
+      twistPhase += h * TAU * P.sway / 1000;              // sway is in millihertz
       if (twistPhase > TAU) twistPhase -= TAU;            // keep it small and exact
+
+      /* Whip physics. The drive is the sway sine squashed by tanh so it
+         dwells near each extreme and flips through zero quickly; the twist
+         is an underdamped spring chasing it, so every flip lands with
+         momentum — overshoot, ring-down, and a velocity spike that the
+         radial lag in buildSites turns into the whip. Stiffness follows
+         the sway rate, so the feel survives the slider. */
+      const target = P.twist * Math.tanh(2.4 * Math.sin(twistPhase + seed * 5.1)) / Math.tanh(2.4);
+      const wn = 4.4 * TAU * P.sway / 1000, zeta = 0.19;
+      if (!twistLive) { twist = target; twistLive = true; }   // no phantom whip on load
+      twistVel += (wn * wn * (target - twist) - 2 * zeta * wn * twistVel) * h;
+      twist += twistVel * h;
+      twistLag = 0.35 / wn;
     }
     if (moving || dirty || ptrLive) {
       dirty = false;
