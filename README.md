@@ -41,7 +41,8 @@ Press <kbd>H</kbd> to show/hide the panel.
 | **spiral** | `phyllotaxis` (golden-angle sunflower), `archimedean` (evenly spaced arms), `logarithmic` (nautilus, dense at the centre) |
 | **points** | 48–2400 seeds (about 60% of them land on screen; the disc has to overshoot the corners) |
 | **turns / arms** | winding and number of interleaved arms (Archimedean and logarithmic only) |
-| **twist** | animated shear — outer cells rotate against inner ones |
+| **twist** | shear amplitude — outer cells rotate against inner ones. It sways sinusoidally through zero, so the spiral winds one way, unwinds to an untwisted state, then winds the other way |
+| **sway** | how long one full twist cycle takes at speed 1 (150 mHz ≈ 7s up to 2 mHz ≈ 500s). Changing it alters the rate without jumping the current position, so the motion stays continuous |
 | **swirl / rings** | angular and radial frequency of the colour ramp |
 | **speed** | 0 freezes the piece as a still |
 | **grout** | insets each cell to open gaps between them |

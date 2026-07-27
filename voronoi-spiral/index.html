@@ -141,6 +141,7 @@
     <div class="row" id="turns_row"><label for="turns">turns</label><input id="turns" type="range" min="1" max="26" step="0.5"><span class="val" id="turns_v"></span></div>
     <div class="row" id="arms_row"><label for="arms">arms</label><input id="arms" type="range" min="1" max="9" step="1"><span class="val" id="arms_v"></span></div>
     <div class="row"><label for="twist">twist</label><input id="twist" type="range" min="0" max="6" step="0.05"><span class="val" id="twist_v"></span></div>
+    <div class="row"><label for="sway" title="how long one full twist cycle takes, at speed 1">sway</label><input id="sway" type="range" min="2" max="150" step="1"><span class="val" id="sway_v"></span></div>
   </div>
 
   <div class="grp">
@@ -256,7 +257,7 @@
      ================================================================ */
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const P = {
-    spiral: 'phyllo', points: 900, turns: 9, arms: 3, twist: 1.6,
+    spiral: 'phyllo', points: 900, turns: 9, arms: 3, twist: 1.6, sway: 11,
     palette: 0, colourArms: 3, bands: 2.6,
     speed: reduceMotion ? 0 : 1, gap: 1.8,
     edges: true, dots: false, grain: true, warp: true,
@@ -266,6 +267,7 @@
   const ctx = canvas.getContext('2d', { alpha: false });
   let W = 0, H = 0, dpr = 1;
   let clock = 123.4, paused = false, seed = 0.37;
+  let twistPhase = 0, twist = 0;      // sway phase advances at P.sway, in mHz
 
   /* ================================================================
      Seeds — three spiral families, sheared by an animated twist.
@@ -288,8 +290,11 @@
     // but any more than that spends seeds off-screen
     const maxR = diag * 0.56 * (1 + 0.035 * Math.sin(t * 0.21 + seed * TAU));
     const rot = t * 0.11 + seed * TAU;
-    // the twist breathes, so bands of cells shear open and close again
-    const twist = P.twist * (0.35 + 0.65 * Math.sin(t * 0.067 + seed * 5.1));
+    /* The twist swings symmetrically through zero: the spiral shears one way,
+       unwinds to an untwisted phyllotaxis, then shears the opposite way. The
+       phase is accumulated in the frame loop rather than derived from the clock,
+       so moving the sway slider changes rate without jumping position. */
+    twist = P.twist * Math.sin(twistPhase + seed * 5.1);
     const mode = P.spiral;
     const arms = mode === 'phyllo' ? 1 : P.arms;
     const per = Math.ceil(n / arms);
@@ -609,7 +614,11 @@
     const ptrLive = Math.abs(ptr.tx - ptr.x) > 0.05 || Math.abs(ptr.ty - ptr.y) > 0.05
       || Math.abs(ptr.want - ptr.k) > 0.002;
 
-    if (moving) clock += dt * P.speed;
+    if (moving) {
+      clock += dt * P.speed;
+      twistPhase += dt * P.speed * TAU * P.sway / 1000;   // sway is in millihertz
+      if (twistPhase > TAU) twistPhase -= TAU;            // keep it small and exact
+    }
     if (moving || dirty || ptrLive) {
       dirty = false;
       buildSites(clock);
@@ -664,12 +673,15 @@
   }
   const int = v => String(Math.round(v));
   const dec = v => v.toFixed(1);
+  // sway is stored as a frequency in mHz but reads far better as its period
+  const secs = v => Math.round(1000 / v) + 's';
 
   const syncers = [];
   syncers.push(bindRange('points', 'points', int));
   syncers.push(bindRange('turns', 'turns', dec));
   syncers.push(bindRange('arms', 'arms', int));
   syncers.push(bindRange('twist', 'twist', dec));
+  syncers.push(bindRange('sway', 'sway', secs));
   syncers.push(bindRange('arms_c', 'colourArms', int));
   syncers.push(bindRange('bands', 'bands', dec));
   syncers.push(bindRange('speed', 'speed', dec));
@@ -740,6 +752,7 @@
     P.turns = 2 + Math.random() * 16;
     P.arms = 1 + (Math.random() * 6 | 0);
     P.twist = Math.random() * Math.random() * 5;
+    P.sway = 4 + (Math.random() * 46 | 0);
     P.colourArms = Math.random() * 9 | 0;
     P.bands = 0.7 + Math.random() * 5;
     P.gap = Math.random() < 0.22 ? 0 : Math.random() * 4;
@@ -824,7 +837,7 @@
         cells.push({ site: vSite[c], verts });
       }
       return {
-        w: W, h: H,
+        w: W, h: H, clock, twist, twistPhase,
         xs: Array.from(xs.subarray(0, siteN)),
         ys: Array.from(ys.subarray(0, siteN)),
         cells,
