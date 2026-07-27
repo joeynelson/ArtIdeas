@@ -76,8 +76,15 @@
   input[type=range]::-moz-range-thumb{width:11px;height:11px;border:none;border-radius:50%;background:var(--accent);cursor:pointer}
   select{
     flex:1 1 auto; min-width:0; font:inherit; font-size:11px; color:var(--ui-fg);
-    background:rgba(255,255,255,.07); border:1px solid var(--ui-line); border-radius:6px; padding:3px 5px;
+    border:1px solid var(--ui-line); border-radius:6px; padding:3px 20px 3px 5px; cursor:pointer;
+    /* native appearance keeps the OS's light control face on macOS, leaving
+       the white text invisible until the popup opens — paint it ourselves */
+    appearance:none; -webkit-appearance:none; color-scheme:dark;
+    background:rgba(255,255,255,.07)
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='rgba(255,255,255,.55)'/%3E%3C/svg%3E")
+      no-repeat right 7px center;
   }
+  select option{background:#16161c; color:var(--ui-fg)}
   .chips{display:grid; grid-template-columns:repeat(2,1fr); gap:5px}
   .chips.pal{grid-template-columns:repeat(3,1fr)}
   .chip{
