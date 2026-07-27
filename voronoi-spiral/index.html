@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spiral Voronoi — animated generative art</title>
+<meta name="description" content="An animated Voronoi mosaic grown from spirals of points, coloured in drifting Oklab ramps.">
+<style>
+  :root{
+    --ui-bg: rgba(14,14,18,.62);
+    --ui-line: rgba(255,255,255,.14);
+    --ui-fg: rgba(255,255,255,.86);
+    --ui-dim: rgba(255,255,255,.45);
+    --accent: #7ad7ff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:#07070b; color:var(--ui-fg);
+    font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow:hidden; -webkit-tap-highlight-color:transparent;
+  }
+  #stage{position:fixed; inset:0; display:block; touch-action:none}
+
+  /* Film grain rides above the canvas as its own composited layer — filling it
+     into the canvas every frame costs more than drawing the whole mosaic. */
+  #grain{
+    position:fixed; inset:0; z-index:2; display:none; pointer-events:none;
+    background-repeat:repeat; mix-blend-mode:overlay; opacity:.32;
+  }
+  body.grain #grain{display:block}
+
+  /* ---------- caption ---------- */
+  #caption{
+    position:fixed; left:22px; top:20px; z-index:3; pointer-events:none;
+    text-shadow:0 1px 14px rgba(0,0,0,.75); transition:opacity 1.2s ease 2.4s;
+  }
+  #caption h1{
+    margin:0; font-size:15px; font-weight:500; letter-spacing:.22em; text-transform:uppercase;
+  }
+  #caption p{margin:.35em 0 0; color:var(--ui-dim); letter-spacing:.06em}
+  body.settled #caption{opacity:.28}
+  body.on-light #caption{color:#241f1b; text-shadow:0 1px 12px rgba(255,255,255,.7)}
+  body.on-light #caption p{color:rgba(36,31,27,.62)}
+
+  /* ---------- control panel ---------- */
+  #panel{
+    position:fixed; right:16px; top:16px; z-index:4; width:246px; max-height:calc(100vh - 32px);
+    overflow-y:auto; padding:14px 14px 12px; border:1px solid var(--ui-line); border-radius:12px;
+    background:var(--ui-bg); backdrop-filter:blur(14px) saturate(140%);
+    -webkit-backdrop-filter:blur(14px) saturate(140%);
+    box-shadow:0 18px 48px rgba(0,0,0,.45);
+    transition:opacity .28s ease, transform .28s ease;
+    scrollbar-width:thin;
+  }
+  #panel.hidden{opacity:0; transform:translateY(-8px) scale(.98); pointer-events:none}
+  .grp{margin:0 0 12px}
+  .grp:last-child{margin-bottom:0}
+  .grp>h2{
+    margin:0 0 7px; font-size:10px; letter-spacing:.2em; text-transform:uppercase;
+    color:var(--ui-dim); font-weight:500;
+  }
+  .row{display:flex; align-items:center; gap:8px; margin:0 0 6px}
+  .row label{flex:0 0 74px; color:var(--ui-dim); font-size:11px; letter-spacing:.04em}
+  .row .val{flex:0 0 34px; text-align:right; font-variant-numeric:tabular-nums; font-size:11px; color:var(--ui-fg)}
+  .row.off{opacity:.34}
+  input[type=range]{
+    flex:1 1 auto; width:100%; height:16px; margin:0; background:none; -webkit-appearance:none; appearance:none;
+  }
+  input[type=range]::-webkit-slider-runnable-track{height:2px; background:rgba(255,255,255,.22); border-radius:2px}
+  input[type=range]::-moz-range-track{height:2px; background:rgba(255,255,255,.22); border-radius:2px}
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; width:11px; height:11px; margin-top:-4.5px; border-radius:50%;
+    background:var(--accent); border:none; cursor:pointer;
+  }
+  input[type=range]::-moz-range-thumb{width:11px;height:11px;border:none;border-radius:50%;background:var(--accent);cursor:pointer}
+  select{
+    flex:1 1 auto; min-width:0; font:inherit; font-size:11px; color:var(--ui-fg);
+    background:rgba(255,255,255,.07); border:1px solid var(--ui-line); border-radius:6px; padding:3px 5px;
+  }
+  .chips{display:grid; grid-template-columns:repeat(2,1fr); gap:5px}
+  .chips.pal{grid-template-columns:repeat(3,1fr)}
+  .chip{
+    font:inherit; font-size:10px; letter-spacing:.06em; color:var(--ui-fg); cursor:pointer;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    background:rgba(255,255,255,.06); border:1px solid var(--ui-line); border-radius:6px; padding:5px 6px;
+    transition:background .18s ease, border-color .18s ease;
+  }
+  .chip:hover{background:rgba(255,255,255,.14)}
+  .chip[aria-pressed=true]{background:rgba(122,215,255,.18); border-color:rgba(122,215,255,.55)}
+  .foot{
+    margin-top:11px; padding-top:9px; border-top:1px solid var(--ui-line);
+    color:var(--ui-dim); font-size:10px; letter-spacing:.05em; line-height:1.6;
+  }
+  .foot kbd{
+    font:inherit; background:rgba(255,255,255,.09); border:1px solid var(--ui-line);
+    border-radius:4px; padding:0 4px; color:var(--ui-fg);
+  }
+  #fps{float:right; font-variant-numeric:tabular-nums}
+
+  /* panel toggle — the only way in on a touch screen, where there is no H key */
+  #toggle{
+    position:fixed; right:16px; bottom:16px; z-index:5; width:42px; height:42px;
+    display:grid; place-items:center; cursor:pointer; font:inherit; font-size:15px; line-height:1;
+    color:var(--ui-fg); background:var(--ui-bg); border:1px solid var(--ui-line); border-radius:50%;
+    backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+    box-shadow:0 8px 24px rgba(0,0,0,.4); transition:background .2s ease, transform .2s ease;
+  }
+  #toggle:hover{background:rgba(255,255,255,.16)}
+  #toggle:active{transform:scale(.94)}
+
+  @media (max-width:560px){
+    #panel{width:auto; left:16px; right:16px; max-height:calc(100vh - 84px)}
+    #caption{left:16px; top:14px}
+    .row label{flex-basis:66px}
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="grain" aria-hidden="true"></div>
+
+<div id="caption">
+  <h1>Spiral Voronoi</h1>
+  <p id="hint">press <b>H</b> for controls</p>
+</div>
+
+<button id="toggle" type="button" aria-label="Show or hide controls" aria-expanded="true" aria-controls="panel">≡</button>
+
+<div id="panel" role="group" aria-label="Controls">
+  <div class="grp">
+    <h2>Form</h2>
+    <div class="row"><label for="spiral">spiral</label>
+      <select id="spiral">
+        <option value="phyllo">phyllotaxis</option>
+        <option value="arch">archimedean</option>
+        <option value="log">logarithmic</option>
+      </select>
+    </div>
+    <div class="row"><label for="points">points</label><input id="points" type="range" min="48" max="2400" step="1"><span class="val" id="points_v"></span></div>
+    <div class="row" id="turns_row"><label for="turns">turns</label><input id="turns" type="range" min="1" max="26" step="0.5"><span class="val" id="turns_v"></span></div>
+    <div class="row" id="arms_row"><label for="arms">arms</label><input id="arms" type="range" min="1" max="9" step="1"><span class="val" id="arms_v"></span></div>
+    <div class="row"><label for="twist">twist</label><input id="twist" type="range" min="0" max="6" step="0.05"><span class="val" id="twist_v"></span></div>
+  </div>
+
+  <div class="grp">
+    <h2>Colour</h2>
+    <div class="chips pal" id="palettes"></div>
+    <div class="row" style="margin-top:7px"><label for="arms_c">swirl</label><input id="arms_c" type="range" min="0" max="8" step="1"><span class="val" id="arms_c_v"></span></div>
+    <div class="row"><label for="bands">rings</label><input id="bands" type="range" min="0.5" max="8" step="0.1"><span class="val" id="bands_v"></span></div>
+  </div>
+
+  <div class="grp">
+    <h2>Motion</h2>
+    <div class="row"><label for="speed">speed</label><input id="speed" type="range" min="0" max="2.5" step="0.05"><span class="val" id="speed_v"></span></div>
+    <div class="row"><label for="gap">grout</label><input id="gap" type="range" min="0" max="7" step="0.1"><span class="val" id="gap_v"></span></div>
+  </div>
+
+  <div class="grp">
+    <h2>Finish</h2>
+    <div class="chips">
+      <button class="chip" id="t_edges" aria-pressed="true">rims</button>
+      <button class="chip" id="t_dots" aria-pressed="false">seeds</button>
+      <button class="chip" id="t_grain" aria-pressed="true">grain</button>
+      <button class="chip" id="t_warp" aria-pressed="true">cursor</button>
+    </div>
+    <div class="chips" style="margin-top:5px">
+      <button class="chip" id="b_rand">shuffle</button>
+      <button class="chip" id="b_save">save png</button>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span id="fps">–</span>
+    <kbd>H</kbd> panel · <kbd>space</kbd> pause<br>
+    <kbd>R</kbd> shuffle · <kbd>S</kbd> save · <kbd>F</kbd> full<br>
+    <kbd>1</kbd>–<kbd>7</kbd> palette
+  </div>
+</div>
+
+<script>
+'use strict';
+(function () {
+  const TAU = Math.PI * 2;
+  const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+
+  /* ================================================================
+     Colour — palettes are interpolated in Oklab so the ramps stay
+     perceptually even instead of muddying through grey.
+     ================================================================ */
+  function srgbToLin(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+  function linToSrgb(c) {
+    const v = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+    return clamp(Math.round(v * 255), 0, 255);
+  }
+  function hexToOklab(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    const r = srgbToLin((n >> 16) & 255), g = srgbToLin((n >> 8) & 255), b = srgbToLin(n & 255);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return [
+      0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+      1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    ];
+  }
+  function oklabToRgb(L, A, B) {
+    const l = L + 0.3963377774 * A + 0.2158037573 * B;
+    const m = L - 0.1055613458 * A - 0.0638541728 * B;
+    const s = L - 0.0894841775 * A - 1.2914855480 * B;
+    const l3 = l * l * l, m3 = m * m * m, s3 = s * s * s;
+    return [
+      linToSrgb(+4.0767416621 * l3 - 3.3077115913 * m3 + 0.2309699292 * s3),
+      linToSrgb(-1.2684380046 * l3 + 2.6097574011 * m3 - 0.3413193965 * s3),
+      linToSrgb(-0.0041960863 * l3 - 0.7034186147 * m3 + 1.7076147010 * s3),
+    ];
+  }
+
+  const PALETTES = [
+    { name: 'nebula',   bg: '#07060f', stops: ['#0d0221', '#3a0ca3', '#7209b7', '#f72585', '#ff8fab', '#4cc9f0', '#1b1035'] },
+    { name: 'ember',    bg: '#0d0605', stops: ['#160b12', '#6a0f49', '#c9184a', '#ff7b00', '#ffd60a', '#a4161a', '#2b0a12'] },
+    { name: 'aurora',   bg: '#03080c', stops: ['#04293a', '#0b7a75', '#3ddc97', '#c7f9cc', '#9d8df1', '#3b2c74', '#052033'] },
+    { name: 'botanic',  bg: '#05100c', stops: ['#08301f', '#1b7f5f', '#7cb518', '#dfe667', '#f2e8cf', '#476a2b', '#123322'] },
+    { name: 'solaris',  bg: '#00050f', stops: ['#00072d', '#0353a4', '#61a5c2', '#f6bd60', '#f28482', '#7b2d5e', '#020a24'] },
+    { name: 'chalk',    bg: '#efe9e1', stops: ['#f7f3ee', '#cdd8df', '#8fa3b3', '#e3b3a0', '#f6dccb', '#b8a9c9', '#fbf7f2'] },
+    { name: 'ink',      bg: '#0a0a0a', stops: ['#0e0e0e', '#2d2d2d', '#6f6f6f', '#b9b6b0', '#efece6', '#7d7a75', '#232323'] },
+  ];
+
+  const LUT_N = 1024;
+  PALETTES.forEach(p => {
+    const bg = parseInt(p.bg.slice(1), 16);
+    p.rgb = [(bg >> 16) & 255, (bg >> 8) & 255, bg & 255];
+    p.light = (p.rgb[0] * 0.299 + p.rgb[1] * 0.587 + p.rgb[2] * 0.114) > 128;
+    const lab = p.stops.map(hexToOklab);
+    const segs = lab.length;              // cyclic: last stop wraps to the first
+    p.fill = new Array(LUT_N);
+    p.rim = new Array(LUT_N);
+    for (let i = 0; i < LUT_N; i++) {
+      const u = i / LUT_N * segs;
+      const a = lab[Math.floor(u) % segs], b = lab[(Math.floor(u) + 1) % segs];
+      let t = u - Math.floor(u);
+      t = t * t * (3 - 2 * t);            // smoothstep the joins
+      const L = a[0] + (b[0] - a[0]) * t, A = a[1] + (b[1] - a[1]) * t, B = a[2] + (b[2] - a[2]) * t;
+      const c = oklabToRgb(L, A, B);
+      p.fill[i] = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+      // rim light: same hue, lifted well past the fill so the edge catches light
+      const r = oklabToRgb(Math.min(L + (1 - L) * 0.7, 0.99), A * 0.75, B * 0.75);
+      p.rim[i] = 'rgba(' + r[0] + ',' + r[1] + ',' + r[2] + ',0.42)';
+    }
+  });
+
+  /* ================================================================
+     State
+     ================================================================ */
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const P = {
+    spiral: 'phyllo', points: 900, turns: 9, arms: 3, twist: 1.6,
+    palette: 0, colourArms: 3, bands: 2.6,
+    speed: reduceMotion ? 0 : 1, gap: 1.8,
+    edges: true, dots: false, grain: true, warp: true,
+  };
+
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  let W = 0, H = 0, dpr = 1;
+  let clock = 123.4, paused = false, seed = 0.37;
+
+  /* ================================================================
+     Seeds — three spiral families, sheared by an animated twist.
+     ================================================================ */
+  let xs = new Float64Array(0), ys = new Float64Array(0);
+  let cu = new Float32Array(0), ca = new Float32Array(0);
+  let siteN = 0, spacing = 24;
+
+  function buildSites(t) {
+    const n = P.points;
+    if (xs.length !== n) {
+      xs = new Float64Array(n); ys = new Float64Array(n);
+      cu = new Float32Array(n); ca = new Float32Array(n);
+    }
+    siteN = n;
+
+    const cx = W * 0.5, cy = H * 0.5;
+    const diag = Math.hypot(W, H);
+    // just over half the diagonal: the disc has to reach past the corners,
+    // but any more than that spends seeds off-screen
+    const maxR = diag * 0.56 * (1 + 0.035 * Math.sin(t * 0.21 + seed * TAU));
+    const rot = t * 0.11 + seed * TAU;
+    // the twist breathes, so bands of cells shear open and close again
+    const twist = P.twist * (0.35 + 0.65 * Math.sin(t * 0.067 + seed * 5.1));
+    const mode = P.spiral;
+    const arms = mode === 'phyllo' ? 1 : P.arms;
+    const per = Math.ceil(n / arms);
+    const turns = P.turns;
+    const expK = 3.1, expD = Math.exp(expK) - 1;
+
+    for (let i = 0; i < n; i++) {
+      let u, th;
+      if (mode === 'phyllo') {
+        u = (i + 0.5) / n;
+        th = i * GOLDEN;
+      } else {
+        const arm = i % arms, j = (i - arm) / arms;
+        u = (j + 0.5) / per;
+        const base = arm * TAU / arms;
+        if (mode === 'arch') { th = turns * TAU * Math.sqrt(u) + base; }
+        else { th = turns * TAU * u + base; }
+      }
+      const r = mode === 'log'
+        ? maxR * (Math.exp(expK * u) - 1) / expD
+        : maxR * Math.sqrt(u);
+      th += rot + twist * (r / maxR);
+      const x = cx + Math.cos(th) * r, y = cy + Math.sin(th) * r;
+      xs[i] = x; ys[i] = y;
+      cu[i] = r / maxR;
+      ca[i] = Math.atan2(y - cy, x - cx) / TAU;   // -0.5 … 0.5
+    }
+    spacing = maxR / Math.sqrt(Math.max(n, 1));
+    if (P.warp) applyWarp();
+  }
+
+  /* Cursor pushes the seeds apart, so cells stretch under the pointer. */
+  const ptr = { x: 0, y: 0, tx: 0, ty: 0, k: 0, want: 0 };
+  function applyWarp() {
+    if (ptr.k < 0.002) return;
+    const R = Math.min(W, H) * 0.3, R2 = R * R, amp = R * 0.34 * ptr.k;
+    for (let i = 0; i < siteN; i++) {
+      const dx = xs[i] - ptr.x, dy = ys[i] - ptr.y, d2 = dx * dx + dy * dy;
+      if (d2 >= R2) continue;
+      const d = Math.sqrt(d2) || 1e-6;
+      let f = 1 - d / R; f *= f;
+      const push = f * amp / d;
+      xs[i] += dx * push; ys[i] += dy * push;
+    }
+  }
+
+  /* ================================================================
+     Uniform grid over the seeds — lets each cell look only at the
+     neighbours that can possibly cut it.
+     ================================================================ */
+  let gw = 1, gh = 1, cs = 64, gx0 = 0, gy0 = 0;
+  let gStart = new Int32Array(0), gItems = new Int32Array(0), gCount = new Int32Array(0);
+
+  function buildGrid() {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < siteN; i++) {
+      if (xs[i] < minX) minX = xs[i]; if (xs[i] > maxX) maxX = xs[i];
+      if (ys[i] < minY) minY = ys[i]; if (ys[i] > maxY) maxY = ys[i];
+    }
+    if (!isFinite(minX)) { minX = minY = 0; maxX = W; maxY = H; }
+    const pad = 1;
+    gx0 = minX - pad; gy0 = minY - pad;
+    const ew = (maxX - minX) + pad * 2, eh = (maxY - minY) + pad * 2;
+    cs = Math.max(6, Math.sqrt(Math.max(ew * eh, 1) / Math.max(siteN, 1)));
+    gw = clamp(Math.ceil(ew / cs), 1, 512);
+    gh = clamp(Math.ceil(eh / cs), 1, 512);
+    // the grid must span the whole extent: a seed clamped into a cell it does
+    // not lie in would break the ring-termination bound in cellFor()
+    cs = Math.max(ew / gw, eh / gh, 1e-3);
+
+    const cells = gw * gh;
+    if (gCount.length < cells + 1) { gCount = new Int32Array(cells + 1); gStart = new Int32Array(cells + 1); }
+    else gCount.fill(0, 0, cells + 1);
+    if (gItems.length < siteN) gItems = new Int32Array(siteN);
+
+    for (let i = 0; i < siteN; i++) gCount[cellOf(xs[i], ys[i])]++;
+    let acc = 0;
+    for (let c = 0; c < cells; c++) { gStart[c] = acc; acc += gCount[c]; }
+    gStart[cells] = acc;
+    const cursor = gCount;                       // reuse as write cursor
+    for (let c = 0; c < cells; c++) cursor[c] = gStart[c];
+    for (let i = 0; i < siteN; i++) gItems[cursor[cellOf(xs[i], ys[i])]++] = i;
+  }
+  function cellOf(x, y) {
+    const gx = clamp((x - gx0) / cs | 0, 0, gw - 1);
+    const gy = clamp((y - gy0) / cs | 0, 0, gh - 1);
+    return gy * gw + gx;
+  }
+
+  /* ================================================================
+     One Voronoi cell = the viewport rectangle clipped by the
+     perpendicular bisector against every nearby seed.
+     ================================================================ */
+  const MAXV = 96;
+  let bufA = new Float64Array(MAXV * 2), bufB = new Float64Array(MAXV * 2);
+
+  // Keep the half-plane nearer to (ax,ay) than to (bx,by).
+  function clipHalf(src, ns, dst, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay;
+    const c = dx * (ax + bx) * 0.5 + dy * (ay + by) * 0.5;
+    let n = 0;
+    let px = src[(ns - 1) * 2], py = src[(ns - 1) * 2 + 1];
+    let fp = px * dx + py * dy - c;
+    for (let i = 0; i < ns; i++) {
+      const qx = src[i * 2], qy = src[i * 2 + 1];
+      const fq = qx * dx + qy * dy - c;
+      if ((fp < 0) !== (fq < 0) && n < MAXV - 1) {
+        const t = fp / (fp - fq);
+        dst[n * 2] = px + (qx - px) * t; dst[n * 2 + 1] = py + (qy - py) * t; n++;
+      }
+      if (fq <= 0 && n < MAXV) { dst[n * 2] = qx; dst[n * 2 + 1] = qy; n++; }
+      px = qx; py = qy; fp = fq;
+    }
+    return n;
+  }
+
+  let resPoly = bufA, resN = 0;
+  function cellFor(i, x0, y0, x1, y1) {
+    const ax = xs[i], ay = ys[i];
+    let src = bufA, dst = bufB, ns = 4;
+    src[0] = x0; src[1] = y0; src[2] = x1; src[3] = y0;
+    src[4] = x1; src[5] = y1; src[6] = x0; src[7] = y1;
+
+    const cgx = clamp((ax - gx0) / cs | 0, 0, gw - 1);
+    const cgy = clamp((ay - gy0) / cs | 0, 0, gh - 1);
+    const maxK = gw + gh;
+
+    for (let k = 0; k <= maxK; k++) {
+      const kx0 = cgx - k, kx1 = cgx + k, ky0 = cgy - k, ky1 = cgy + k;
+      for (let gy = Math.max(ky0, 0), gyE = Math.min(ky1, gh - 1); gy <= gyE; gy++) {
+        const edgeRow = (gy === ky0 || gy === ky1);
+        for (let gx = Math.max(kx0, 0), gxE = Math.min(kx1, gw - 1); gx <= gxE; gx++) {
+          if (!edgeRow && gx !== kx0 && gx !== kx1) { gx = kx1 - 1; continue; }
+          const c = gy * gw + gx;
+          for (let p = gStart[c], e = gStart[c + 1]; p < e; p++) {
+            const j = gItems[p];
+            if (j === i) continue;
+            const jx = xs[j], jy = ys[j];
+            if (jx === ax && jy === ay) continue;      // coincident seeds
+            const n2 = clipHalf(src, ns, dst, ax, ay, jx, jy);
+            const tmp = src; src = dst; dst = tmp; ns = n2;
+            if (ns < 3) { resN = 0; return 0; }
+          }
+        }
+      }
+      // A seed at distance d can only cut points farther than d/2 from us,
+      // and ring k+1 starts at k*cs — so once k*cs >= 2R the cell is final.
+      let r2 = 0;
+      for (let v = 0; v < ns; v++) {
+        const dx = src[v * 2] - ax, dy = src[v * 2 + 1] - ay, d2 = dx * dx + dy * dy;
+        if (d2 > r2) r2 = d2;
+      }
+      if (k * cs >= 2 * Math.sqrt(r2)) break;
+    }
+    resPoly = src; resN = ns;
+    return ns;
+  }
+
+  /* ================================================================
+     Geometry cache — every cell for the frame is tessellated into one flat
+     vertex buffer, then handed to the paint step.
+     ================================================================ */
+  let vData = new Float64Array(4096), vOff = new Int32Array(256),
+      vLen = new Int32Array(256), vSite = new Int32Array(256);
+  let cellCount = 0, vUsed = 0;
+
+  function growCache(n) {
+    if (vOff.length < n) {
+      vOff = new Int32Array(n); vLen = new Int32Array(n); vSite = new Int32Array(n);
+    }
+  }
+  function reserve(floats) {
+    if (vUsed + floats > vData.length) {
+      const next = new Float64Array(Math.max(vData.length * 2, vUsed + floats));
+      next.set(vData.subarray(0, vUsed)); vData = next;
+    }
+  }
+
+  function tessellate() {
+    const m = 48;                                  // bleed cells past the frame
+    const x0 = -m, y0 = -m, x1 = W + m, y1 = H + m;
+    const reject = 3 * cs;                         // seeds too far out own nothing on screen
+    const grout = P.gap * 0.5;
+    growCache(siteN); cellCount = 0; vUsed = 0;
+
+    for (let i = 0; i < siteN; i++) {
+      const ax = xs[i], ay = ys[i];
+      if (ax < x0 - reject || ax > x1 + reject || ay < y0 - reject || ay > y1 + reject) continue;
+      const n = cellFor(i, x0, y0, x1, y1);
+      if (n < 3) continue;
+
+      const poly = resPoly;
+      let mx = 0, my = 0;
+      for (let v = 0; v < n; v++) { mx += poly[v * 2]; my += poly[v * 2 + 1]; }
+      mx /= n; my /= n;
+
+      reserve(n * 2);
+      const off = vUsed;
+      for (let v = 0; v < n; v++) {
+        let px = poly[v * 2], py = poly[v * 2 + 1];
+        if (grout > 0) {                           // pull vertices in to open the grout
+          const dx = mx - px, dy = my - py, d = Math.hypot(dx, dy);
+          if (d > 1e-6) {
+            const s = Math.min(grout, d * 0.45) / d;
+            px += dx * s; py += dy * s;
+          }
+        }
+        vData[vUsed++] = px; vData[vUsed++] = py;
+      }
+      vOff[cellCount] = off; vLen[cellCount] = n; vSite[cellCount] = i;
+      cellCount++;
+    }
+  }
+
+  /* ================================================================
+     Paint
+     ================================================================ */
+  let grainTile = null, vignette = null;
+
+  function makeGrain() {
+    const s = 128, c = document.createElement('canvas');
+    c.width = c.height = s;
+    const g = c.getContext('2d'), img = g.createImageData(s, s), d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = 116 + (Math.random() * 72 | 0);
+      d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    grainTile = c;
+    const el = document.getElementById('grain');
+    el.style.backgroundImage = 'url(' + c.toDataURL() + ')';
+    el.style.backgroundSize = s + 'px ' + s + 'px';
+  }
+  function makeVignette() {
+    const pal = PALETTES[P.palette], c = pal.rgb;
+    const pre = 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',';
+    const r = Math.hypot(W, H) * 0.62;
+    const g = ctx.createRadialGradient(W * 0.5, H * 0.44, r * 0.14, W * 0.5, H * 0.5, r);
+    g.addColorStop(0, pre + '0)');
+    g.addColorStop(0.55, pre + '0.10)');
+    g.addColorStop(1, pre + (pal.light ? '0.50)' : '0.64)'));
+    vignette = g;
+  }
+
+  function colourIndex(i, phase) {
+    const t = P.bands * cu[i] - P.colourArms * ca[i] + phase;
+    let f = t - Math.floor(t);
+    let idx = (f * LUT_N) | 0;
+    return idx >= LUT_N ? LUT_N - 1 : idx;
+  }
+
+  function render(t) {
+    const pal = PALETTES[P.palette];
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = pal.bg;
+    ctx.fillRect(0, 0, W, H);
+
+    const phase = t * 0.045;
+    const fill = pal.fill, rim = pal.rim;
+    const edges = P.edges;
+
+    /* One pass per cell: build the path once, fill it, then lay the rim
+       light straight on top. Every draw stays on 'source-over' — switching
+       globalCompositeOperation mid-frame costs more than all of this work
+       put together, so the rim is an alpha blend rather than an add. */
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 1.15;
+    for (let c = 0; c < cellCount; c++) {
+      const off = vOff[c], n = vLen[c], ci = colourIndex(vSite[c], phase);
+      ctx.beginPath();
+      ctx.moveTo(vData[off], vData[off + 1]);
+      for (let v = 1; v < n; v++) ctx.lineTo(vData[off + v * 2], vData[off + v * 2 + 1]);
+      ctx.closePath();
+      ctx.fillStyle = fill[ci];
+      ctx.fill();
+      if (edges) { ctx.strokeStyle = rim[ci]; ctx.stroke(); }
+    }
+
+    // seeds
+    if (P.dots) {
+      ctx.fillStyle = pal.light ? 'rgba(30,26,24,.55)' : 'rgba(255,255,255,.62)';
+      const r = clamp(spacing * 0.09, 0.6, 2.2);
+      ctx.beginPath();
+      for (let c = 0; c < cellCount; c++) {
+        const i = vSite[c];
+        ctx.moveTo(xs[i] + r, ys[i]);
+        ctx.arc(xs[i], ys[i], r, 0, TAU);
+      }
+      ctx.fill();
+    }
+
+    // depth: a soft fall-off towards the palette's own ground colour
+    if (vignette) {
+      ctx.fillStyle = vignette;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  /* ================================================================
+     Loop
+     ================================================================ */
+  let last = 0, fpsAcc = 0, fpsN = 0, dirty = true;
+  const fpsEl = document.getElementById('fps');
+
+  function frame(now) {
+    const dt = last ? Math.min((now - last) / 1000, 0.05) : 0.016;
+    last = now;
+
+    const moving = !paused && P.speed > 0;
+    ptr.k += (ptr.want - ptr.k) * Math.min(1, dt * 6);
+    ptr.x += (ptr.tx - ptr.x) * Math.min(1, dt * 8);
+    ptr.y += (ptr.ty - ptr.y) * Math.min(1, dt * 8);
+
+    // when the piece is frozen, only redraw if the cursor is still settling
+    const ptrLive = Math.abs(ptr.tx - ptr.x) > 0.05 || Math.abs(ptr.ty - ptr.y) > 0.05
+      || Math.abs(ptr.want - ptr.k) > 0.002;
+
+    if (moving) clock += dt * P.speed;
+    if (moving || dirty || ptrLive) {
+      dirty = false;
+      buildSites(clock);
+      buildGrid();
+      tessellate();
+      render(clock);
+    }
+
+    fpsAcc += dt; fpsN++;
+    if (fpsAcc >= 0.5) {
+      fpsEl.textContent = Math.round(fpsN / fpsAcc) + ' fps';
+      fpsAcc = 0; fpsN = 0;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+    makeVignette();
+    if (!grainTile) makeGrain();
+    if (!ptr.tx && !ptr.ty) { ptr.x = ptr.tx = W * 0.5; ptr.y = ptr.ty = H * 0.5; }
+    dirty = true;
+  }
+
+  /* ================================================================
+     Controls
+     ================================================================ */
+  const panel = document.getElementById('panel');
+  const $ = id => document.getElementById(id);
+
+  const toggleBtn = $('toggle');
+  function togglePanel(show) {
+    const open = show === undefined ? panel.classList.contains('hidden') : show;
+    panel.classList.toggle('hidden', !open);
+    toggleBtn.setAttribute('aria-expanded', String(open));
+  }
+  toggleBtn.addEventListener('click', () => togglePanel());
+
+  function bindRange(id, key, fmt) {
+    const el = $(id), out = $(id + '_v');
+    el.value = P[key];
+    out.textContent = fmt(P[key]);
+    el.addEventListener('input', () => {
+      P[key] = parseFloat(el.value);
+      out.textContent = fmt(P[key]);
+      dirty = true;
+    });
+    return () => { el.value = P[key]; out.textContent = fmt(P[key]); };
+  }
+  const int = v => String(Math.round(v));
+  const dec = v => v.toFixed(1);
+
+  const syncers = [];
+  syncers.push(bindRange('points', 'points', int));
+  syncers.push(bindRange('turns', 'turns', dec));
+  syncers.push(bindRange('arms', 'arms', int));
+  syncers.push(bindRange('twist', 'twist', dec));
+  syncers.push(bindRange('arms_c', 'colourArms', int));
+  syncers.push(bindRange('bands', 'bands', dec));
+  syncers.push(bindRange('speed', 'speed', dec));
+  syncers.push(bindRange('gap', 'gap', dec));
+
+  const spiralSel = $('spiral');
+  spiralSel.value = P.spiral;
+  spiralSel.addEventListener('change', () => { P.spiral = spiralSel.value; syncUI(); dirty = true; });
+
+  // palette chips
+  const palWrap = $('palettes');
+  const palChips = PALETTES.map((p, i) => {
+    const b = document.createElement('button');
+    b.className = 'chip'; b.textContent = p.name; b.type = 'button';
+    b.setAttribute('aria-pressed', String(i === P.palette));
+    b.addEventListener('click', () => setPalette(i));
+    palWrap.appendChild(b);
+    return b;
+  });
+  function applyPalette() {
+    const pal = PALETTES[P.palette];
+    palChips.forEach((b, k) => b.setAttribute('aria-pressed', String(k === P.palette)));
+    document.body.style.background = pal.bg;
+    document.body.classList.toggle('on-light', pal.light);
+    makeVignette();
+  }
+  function setPalette(i) {
+    P.palette = ((i % PALETTES.length) + PALETTES.length) % PALETTES.length;
+    applyPalette();
+    dirty = true;
+  }
+
+  function bindToggle(id, key) {
+    const el = $(id);
+    el.setAttribute('aria-pressed', String(P[key]));
+    el.addEventListener('click', () => {
+      P[key] = !P[key];
+      el.setAttribute('aria-pressed', String(P[key]));
+      if (key === 'warp' && !P[key]) ptr.want = 0;
+      if (key === 'grain') applyGrain();
+      dirty = true;
+    });
+    return () => el.setAttribute('aria-pressed', String(P[key]));
+  }
+  syncers.push(bindToggle('t_edges', 'edges'));
+  syncers.push(bindToggle('t_dots', 'dots'));
+  syncers.push(bindToggle('t_grain', 'grain'));
+  syncers.push(bindToggle('t_warp', 'warp'));
+
+  function applyGrain() { document.body.classList.toggle('grain', P.grain); }
+
+  function syncUI() {
+    syncers.forEach(f => f());
+    applyGrain();
+    applyPalette();
+    spiralSel.value = P.spiral;
+    const rel = P.spiral !== 'phyllo';
+    $('turns_row').classList.toggle('off', !rel);
+    $('arms_row').classList.toggle('off', !rel);
+    $('turns').disabled = !rel;
+    $('arms').disabled = !rel;
+  }
+
+  function shuffle() {
+    const modes = ['phyllo', 'arch', 'log'];
+    P.spiral = modes[Math.random() * modes.length | 0];
+    P.points = 260 + (Math.random() * 1160 | 0);
+    P.turns = 2 + Math.random() * 16;
+    P.arms = 1 + (Math.random() * 6 | 0);
+    P.twist = Math.random() * Math.random() * 5;
+    P.colourArms = Math.random() * 9 | 0;
+    P.bands = 0.7 + Math.random() * 5;
+    P.gap = Math.random() < 0.22 ? 0 : Math.random() * 4;
+    seed = Math.random();
+    setPalette(Math.random() * PALETTES.length | 0);
+    syncUI();
+    dirty = true;
+  }
+  $('b_rand').addEventListener('click', shuffle);
+
+  function save() {
+    // the grain lives in CSS, so fold it into the bitmap on the way out
+    let src = canvas;
+    if (P.grain && grainTile) {
+      src = document.createElement('canvas');
+      src.width = canvas.width; src.height = canvas.height;
+      const g = src.getContext('2d');
+      g.drawImage(canvas, 0, 0);
+      g.globalCompositeOperation = 'overlay';
+      g.globalAlpha = 0.5;
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.fillStyle = g.createPattern(grainTile, 'repeat');
+      g.fillRect(0, 0, W, H);
+    }
+    src.toBlob(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'spiral-voronoi-' + PALETTES[P.palette].name + '-' + Math.round(clock * 100) + '.png';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }, 'image/png');
+  }
+  $('b_save').addEventListener('click', save);
+
+  /* ---------- pointer ---------- */
+  function movePtr(e) {
+    ptr.tx = e.clientX; ptr.ty = e.clientY;
+    if (P.warp) ptr.want = 1;
+  }
+  window.addEventListener('pointermove', movePtr, { passive: true });
+  window.addEventListener('pointerdown', movePtr, { passive: true });
+  window.addEventListener('pointerleave', () => { ptr.want = 0; });
+  // a finger leaving the glass should release the warp; a mouse still hovers
+  window.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') ptr.want = 0; });
+  window.addEventListener('pointercancel', () => { ptr.want = 0; });
+  window.addEventListener('blur', () => { ptr.want = 0; });
+
+  /* ---------- keys ---------- */
+  window.addEventListener('keydown', e => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'select') {
+      if (e.key !== 'h' && e.key !== 'H') return;      // let sliders keep arrows/space
+    }
+    // a focused chip owns space/enter, otherwise it would fire twice
+    if (tag === 'button' && (e.key === ' ' || e.key === 'Enter')) return;
+    switch (e.key) {
+      case 'h': case 'H': togglePanel(); break;
+      case ' ': paused = !paused; e.preventDefault(); break;
+      case 'r': case 'R': shuffle(); break;
+      case 's': case 'S': save(); break;
+      case 'f': case 'F':
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen?.();
+        break;
+      default:
+        if (e.key >= '1' && e.key <= '7') setPalette(+e.key - 1);
+    }
+  });
+
+  /* ---------- small scripting hook ---------- */
+  window.SpiralVoronoi = {
+    params: P,
+    shuffle, setPalette, save,
+    set(k, v) { if (k in P) { P[k] = v; syncUI(); dirty = true; } },
+    pause(v) { paused = v === undefined ? !paused : !!v; },
+    snapshot() {
+      const cells = [];
+      for (let c = 0; c < cellCount; c++) {
+        const off = vOff[c], n = vLen[c], verts = new Array(n * 2);
+        for (let v = 0; v < n * 2; v++) verts[v] = vData[off + v];
+        cells.push({ site: vSite[c], verts });
+      }
+      return {
+        w: W, h: H,
+        xs: Array.from(xs.subarray(0, siteN)),
+        ys: Array.from(ys.subarray(0, siteN)),
+        cells,
+      };
+    },
+  };
+
+  /* ---------- go ---------- */
+  // on a phone the panel would cover the piece, and there is no H key to press
+  if (matchMedia('(hover: none)').matches) $('hint').innerHTML = 'tap <b>≡</b> for controls';
+  if (matchMedia('(max-width: 560px)').matches) togglePanel(false);
+
+  window.addEventListener('resize', resize);
+  syncUI();
+  setPalette(P.palette);
+  resize();
+  requestAnimationFrame(frame);
+  setTimeout(() => document.body.classList.add('settled'), 100);
+})();
+</script>
+</body>
+</html>
