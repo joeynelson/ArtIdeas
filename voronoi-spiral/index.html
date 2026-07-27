@@ -23,11 +23,14 @@
   #stage{position:fixed; inset:0; display:block; touch-action:none}
 
   /* Film grain rides above the canvas as its own composited layer — filling it
-     into the canvas every frame costs more than drawing the whole mosaic. */
+     into the canvas every frame costs more than drawing the whole mosaic.
+     The layer holds one oversized polar-grain canvas that spins with the
+     spiral; only its transform changes per frame. */
   #grain{
     position:fixed; inset:0; z-index:2; display:none; pointer-events:none;
-    background-repeat:repeat; mix-blend-mode:overlay; opacity:.32;
+    overflow:hidden; mix-blend-mode:overlay; opacity:.32;
   }
+  #grain canvas{position:absolute; left:50%; top:50%; will-change:transform}
   body.grain #grain{display:block}
 
   /* ---------- caption ---------- */
@@ -297,6 +300,7 @@
     // but any more than that spends seeds off-screen
     const maxR = diag * 0.56 * (1 + 0.035 * Math.sin(t * 0.21 + seed * TAU));
     const rot = t * 0.11 + seed * TAU;
+    grainRot = rot;   // the twist shear dies out at r=0, so the centre tiles turn at exactly rot
     /* The twist swings symmetrically through zero: the spiral shears one way,
        unwinds to an untwisted phyllotaxis, then shears the opposite way. The
        phase is accumulated in the frame loop rather than derived from the clock,
@@ -521,19 +525,45 @@
      ================================================================ */
   let grainTile = null, vignette = null;
 
-  function makeGrain() {
-    const s = 128, c = document.createElement('canvas');
-    c.width = c.height = s;
-    const g = c.getContext('2d'), img = g.createImageData(s, s), d = img.data;
-    for (let i = 0; i < d.length; i += 4) {
-      const v = 116 + (Math.random() * 72 | 0);
-      d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255;
+  function grainHash(a, b) {
+    let x = (a * 374761393 + b * 668265263) | 0;
+    x = Math.imul(x ^ (x >>> 13), 1274126177);
+    x ^= x >>> 16;
+    return (x >>> 0) / 4294967296;
+  }
+
+  /* The grain is polar rather than a screen-space tile: short streaks lie
+     along the radius, so every fleck points at the spiral's centre, and the
+     finished disc can spin with the mosaic without showing a seam. Built once
+     per size — S must cover the viewport diagonal from any rotation. */
+  function makeGrain(S) {
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d'), img = g.createImageData(S, S), d = img.data;
+    const len = 11, arc = 1.7, R = S * 0.5;   // streak length along r, width across it
+    for (let y = 0, p = 0; y < S; y++) {
+      const dy = y - R + 0.5;
+      for (let x = 0; x < S; x++, p += 4) {
+        const dx = x - R + 0.5;
+        const rq = (Math.sqrt(dx * dx + dy * dy) / len) | 0;
+        // cells per ring keeps the arc width constant; the per-ring phase
+        // stops cell walls from lining up into a radial crease
+        const na = ((TAU * (rq + 0.5) * len / arc) | 0) || 1;
+        const aq = ((Math.atan2(dy, dx) / TAU + 0.5 + grainHash(rq, 9173)) * na) | 0;
+        const n = grainHash(rq, aq) * 0.78 + Math.random() * 0.22;
+        const v = 116 + n * 72 | 0;
+        d[p] = d[p + 1] = d[p + 2] = v; d[p + 3] = 255;
+      }
     }
     g.putImageData(img, 0, 0);
     grainTile = c;
-    const el = document.getElementById('grain');
-    el.style.backgroundImage = 'url(' + c.toDataURL() + ')';
-    el.style.backgroundSize = s + 'px ' + s + 'px';
+    document.getElementById('grain').replaceChildren(c);
+    placeGrain();
+  }
+
+  let grainRot = 0;
+  function placeGrain() {
+    if (grainTile) grainTile.style.transform = 'translate(-50%,-50%) rotate(' + grainRot + 'rad)';
   }
   function makeVignette() {
     const pal = PALETTES[P.palette], c = pal.rgb;
@@ -632,6 +662,7 @@
       buildGrid();
       tessellate();
       render(clock);
+      if (P.grain) placeGrain();
     }
 
     fpsAcc += dt; fpsN++;
@@ -648,7 +679,9 @@
     canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
     canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
     makeVignette();
-    if (!grainTile) makeGrain();
+    // rounded up in steps so a live window drag doesn't rebuild every event
+    const need = Math.ceil(Math.hypot(W, H) / 256) * 256;
+    if (!grainTile || grainTile.width < need) makeGrain(need);
     if (!ptr.tx && !ptr.ty) { ptr.x = ptr.tx = W * 0.5; ptr.y = ptr.ty = H * 0.5; }
     dirty = true;
   }
@@ -771,7 +804,7 @@
   $('b_rand').addEventListener('click', shuffle);
 
   function save() {
-    // the grain lives in CSS, so fold it into the bitmap on the way out
+    // the grain lives in its own DOM layer, so fold it into the bitmap on the way out
     let src = canvas;
     if (P.grain && grainTile) {
       src = document.createElement('canvas');
@@ -781,8 +814,9 @@
       g.globalCompositeOperation = 'overlay';
       g.globalAlpha = 0.5;
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
-      g.fillStyle = g.createPattern(grainTile, 'repeat');
-      g.fillRect(0, 0, W, H);
+      g.translate(W * 0.5, H * 0.5);
+      g.rotate(grainRot);
+      g.drawImage(grainTile, -grainTile.width * 0.5, -grainTile.height * 0.5);
     }
     src.toBlob(blob => {
       const a = document.createElement('a');
