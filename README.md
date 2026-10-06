@@ -53,3 +53,26 @@ Press <kbd>H</kbd> to show/hide the panel.
 Honours `prefers-reduced-motion` by starting with speed at 0. `window.SpiralVoronoi`
 exposes `params`, `set`, `pause`, `shuffle`, `setPalette`, `save`, and `snapshot()`
 if you want to drive it from the console.
+
+## Bevel Rotate
+
+[`bevel-rotate/index.html`](bevel-rotate/index.html)
+
+Two bevelled frames on flat grey, shaded with four greys from white to black. Our
+eyes assume light comes from above, so the left picture reads as a raised frame
+around a sunken window, and the right one (the same picture turned 180°) reads as
+the reverse. The page rotates the whole picture about its centre, so you can watch
+raised turn into sunken as it goes past 90°.
+
+The picture is drawn as vector trapezoids, so it stays sharp at any size. You can
+also load or drop your own image to rotate it instead.
+
+- **mode**: `spin` turns continuously; `flip 0°↔180°` eases between the two
+  orientations and holds at each end so you can compare them
+- **speed**: degrees per second (negative turns anticlockwise), **hold**: pause
+  at each end in flip mode
+- **fit**: `fit image` fills the window (corners clip as it turns); `never clip`
+  shrinks it so the whole picture always fits
+
+Drag to turn it by hand. <kbd>space</kbd> pause · <kbd>←</kbd>/<kbd>→</kbd> nudge (with
+<kbd>shift</kbd>: 15°) · <kbd>0</kbd> reset · <kbd>H</kbd> hide panel
