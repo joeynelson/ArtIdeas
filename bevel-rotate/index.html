@@ -167,17 +167,39 @@
   addEventListener('resize', resize);
   resize();
 
+  // The part of the window the panel doesn't cover, in CSS pixels. The picture is
+  // centred and sized in this area, so it never sits half under the panel.
+  function viewArea() {
+    const vw = innerWidth, vh = innerHeight, gap = 16;
+    const panel = $('panel');
+    if (!panel.classList.contains('hidden')) {
+      const r = panel.getBoundingClientRect();
+      if (r.width > vw * 0.6) {
+        // docked along the bottom (narrow screens): use the space above it
+        if (r.top - gap > vh * 0.3) return { x: 0, y: 0, w: vw, h: r.top - gap };
+      } else if (r.left - gap > vw * 0.4) {
+        // floating on the right: use the space to its left
+        return { x: 0, y: 0, w: r.left - gap, h: vh };
+      }
+    }
+    return { x: 0, y: 0, w: vw, h: vh };
+  }
+  let center = { x: innerWidth / 2, y: innerHeight / 2 };
+
   function render() {
     const cw = canvas.width, ch = canvas.height;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = state.bg;
     ctx.fillRect(0, 0, cw, ch);
 
+    const area = viewArea();
+    center = { x: area.x + area.w / 2, y: area.y + area.h / 2 };
+    const aw = area.w * dpr, ah = area.h * dpr;
     const w = state.imgW, h = state.imgH;
     const s = state.fit === 'circle'
-      ? Math.min(cw, ch) / Math.hypot(w, h)
-      : Math.min(cw / w, ch / h);
-    ctx.translate(cw / 2, ch / 2);
+      ? Math.min(aw, ah) / Math.hypot(w, h)
+      : Math.min(aw / w, ah / h);
+    ctx.translate(center.x * dpr, center.y * dpr);
     ctx.rotate(state.angle * Math.PI / 180);
     ctx.scale(s, s);
     ctx.translate(-w / 2, -h / 2);
@@ -279,7 +301,7 @@
 
   // drag to rotate: track the pointer's angle around the screen centre
   let grabAngle = 0;
-  const pointerAngle = e => Math.atan2(e.clientY - innerHeight / 2, e.clientX - innerWidth / 2) * 180 / Math.PI;
+  const pointerAngle = e => Math.atan2(e.clientY - center.y, e.clientX - center.x) * 180 / Math.PI;
   canvas.addEventListener('pointerdown', e => {
     dragging = true; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId);
     grabAngle = pointerAngle(e) - state.angle;
