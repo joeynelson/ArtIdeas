@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bevel Rotate — shading illusion</title>
+<meta name="description" content="Bevelled frames that read as raised or sunken depending on which way is up, rotating slowly about the centre.">
+<style>
+  :root{
+    --ui-bg: rgba(14,14,18,.62);
+    --ui-line: rgba(255,255,255,.14);
+    --ui-fg: rgba(255,255,255,.86);
+    --ui-dim: rgba(255,255,255,.45);
+    --accent: #7ad7ff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:#999; color:var(--ui-fg);
+    font:13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow:hidden; -webkit-tap-highlight-color:transparent;
+  }
+  #stage{position:fixed; inset:0; display:block; touch-action:none; cursor:grab}
+  #stage.dragging{cursor:grabbing}
+
+  #panel{
+    position:fixed; right:16px; top:16px; z-index:4; width:264px; max-height:calc(100vh - 32px);
+    overflow-y:auto; padding:14px; border:1px solid var(--ui-line); border-radius:12px;
+    background:var(--ui-bg); backdrop-filter:blur(14px) saturate(140%);
+    -webkit-backdrop-filter:blur(14px) saturate(140%);
+    box-shadow:0 18px 48px rgba(0,0,0,.35);
+    transition:opacity .28s ease, transform .28s ease;
+  }
+  #panel.hidden{opacity:0; transform:translateY(-8px) scale(.98); pointer-events:none}
+  #panel h1{margin:0 0 10px; font-size:11px; font-weight:500; letter-spacing:.2em; text-transform:uppercase}
+  .row{display:grid; grid-template-columns:64px 1fr 44px; align-items:center; gap:8px; margin:0 0 9px}
+  .row label{color:var(--ui-dim)}
+  .row output{text-align:right; font-variant-numeric:tabular-nums}
+  input[type=range]{width:100%; accent-color:var(--accent)}
+  select{width:100%; background:rgba(255,255,255,.08); color:var(--ui-fg); border:1px solid var(--ui-line); border-radius:6px; padding:3px 4px; font:inherit}
+  select option{background:#1a1a20}
+  .btns{display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 10px}
+  button, .file{
+    flex:1 1 auto; padding:5px 8px; border:1px solid var(--ui-line); border-radius:6px;
+    background:rgba(255,255,255,.08); color:var(--ui-fg); font:inherit; cursor:pointer; text-align:center;
+  }
+  button:hover, .file:hover{background:rgba(255,255,255,.16)}
+  .file input{display:none}
+  #angle{font-size:22px; font-variant-numeric:tabular-nums; margin:0 0 8px}
+  .hint{color:var(--ui-dim); font-size:11px; margin:8px 0 0}
+  kbd{border:1px solid var(--ui-line); border-radius:3px; padding:0 3px; font:inherit}
+  @media (max-width:520px){ #panel{left:16px; right:16px; width:auto; top:auto; bottom:16px; max-height:45vh} }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div id="panel">
+  <h1>Bevel Rotate</h1>
+  <div id="angle">0.0°</div>
+  <div class="row">
+    <label for="mode">mode</label>
+    <select id="mode" style="grid-column:span 2">
+      <option value="spin">spin</option>
+      <option value="flip">flip 0°↔180°</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="speed">speed</label>
+    <input id="speed" type="range" min="-120" max="120" step="1" value="20">
+    <output id="speedOut">20°/s</output>
+  </div>
+  <div class="row">
+    <label for="hold">hold</label>
+    <input id="hold" type="range" min="0" max="6" step="0.25" value="2">
+    <output id="holdOut">2s</output>
+  </div>
+  <div class="row">
+    <label for="fit">fit</label>
+    <select id="fit" style="grid-column:span 2">
+      <option value="contain">fit image</option>
+      <option value="circle">never clip</option>
+    </select>
+  </div>
+  <div class="btns">
+    <button id="pause">pause</button>
+    <button data-snap="0">0°</button>
+    <button data-snap="90">90°</button>
+    <button data-snap="180">180°</button>
+  </div>
+  <div class="btns">
+    <label class="file">load image…<input id="file" type="file" accept="image/*"></label>
+    <button id="builtin">default</button>
+  </div>
+  <p class="hint">Drag to turn by hand. Drop an image anywhere to rotate it instead.<br>
+    <kbd>space</kbd> pause · <kbd>←</kbd><kbd>→</kbd> nudge · <kbd>0</kbd> reset · <kbd>H</kbd> hide panel</p>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---- built-in picture: two bevelled frames, each a frame-within-a-frame ----
+  // Coordinates follow the 2000×738 reference. Each bevel is four trapezoids
+  // (top, right, bottom, left) between an outer and an inner rectangle.
+  const W0 = 2000, H0 = 738, BG = '#999999';
+  const WHITE = '#ffffff', LIGHT = '#e5e5e5', DARK = '#4a4a4a', BLACK = '#000000';
+  const bevels = [
+    // left: raised outer frame around a sunken inner one (lit from the top-left)
+    { o:[215,143,785,595],  i:[262,190,738,548], c:[WHITE, DARK, BLACK, LIGHT] },
+    { o:[357,287,641,453],  i:[405,333,595,405], c:[BLACK, LIGHT, WHITE, DARK] },
+    // right: the same picture turned 180°, so the shading says the opposite
+    { o:[1215,143,1785,595], i:[1262,190,1738,548], c:[BLACK, LIGHT, WHITE, DARK] },
+    { o:[1359,285,1643,451], i:[1405,331,1595,405], c:[WHITE, DARK, BLACK, LIGHT] },
+  ];
+
+  function drawBuiltin(ctx) {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W0, H0);
+    for (const b of bevels) {
+      const [ox0, oy0, ox1, oy1] = b.o, [ix0, iy0, ix1, iy1] = b.i;
+      const quads = [
+        [[ox0,oy0],[ox1,oy0],[ix1,iy0],[ix0,iy0]], // top
+        [[ox1,oy0],[ox1,oy1],[ix1,iy1],[ix1,iy0]], // right
+        [[ox1,oy1],[ox0,oy1],[ix0,iy1],[ix1,iy1]], // bottom
+        [[ox0,oy1],[ox0,oy0],[ix0,iy0],[ix0,iy1]], // left
+      ];
+      quads.forEach((q, k) => {
+        ctx.beginPath();
+        q.forEach(([x, y], n) => n ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+        ctx.closePath();
+        ctx.fillStyle = b.c[k];
+        ctx.fill();
+        // hairline in the same colour hides antialiasing seams between facets
+        ctx.strokeStyle = b.c[k]; ctx.lineWidth = 0.75; ctx.stroke();
+      });
+    }
+  }
+
+  // ---- state ----
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const state = {
+    angle: 0,               // degrees
+    speed: reduceMotion ? 0 : 20,
+    mode: 'spin',
+    hold: 2,
+    fit: 'contain',
+    paused: false,
+    image: null,            // null → built-in vector drawing
+    imgW: W0, imgH: H0,
+    bg: BG,
+    // flip-mode bookkeeping
+    flipFrom: 0, flipTo: 180, flipT: 0, holding: 0,
+  };
+  $('speed').value = state.speed;
+
+  let dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(innerWidth * dpr);
+    canvas.height = Math.round(innerHeight * dpr);
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  function render() {
+    const cw = canvas.width, ch = canvas.height;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = state.bg;
+    ctx.fillRect(0, 0, cw, ch);
+
+    const w = state.imgW, h = state.imgH;
+    const s = state.fit === 'circle'
+      ? Math.min(cw, ch) / Math.hypot(w, h)
+      : Math.min(cw / w, ch / h);
+    ctx.translate(cw / 2, ch / 2);
+    ctx.rotate(state.angle * Math.PI / 180);
+    ctx.scale(s, s);
+    ctx.translate(-w / 2, -h / 2);
+    if (state.image) {
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(state.image, 0, 0, w, h);
+    } else {
+      drawBuiltin(ctx);
+    }
+    const a = ((state.angle % 360) + 360) % 360;
+    $('angle').textContent = a.toFixed(1) + '°';
+  }
+
+  const easeInOut = t => t < .5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+
+  let last = performance.now(), dragging = false;
+  function frame(now) {
+    const dt = Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!state.paused && !dragging) {
+      if (state.mode === 'spin') {
+        state.angle += state.speed * dt;
+      } else if (state.speed !== 0) {
+        if (state.holding > 0) {
+          state.holding -= dt;
+        } else {
+          // one 180° leg takes 180/|speed| seconds; direction follows the sign of speed
+          state.flipT = Math.min(1, state.flipT + dt * Math.abs(state.speed) / 180);
+          state.angle = state.flipFrom + (state.flipTo - state.flipFrom) * easeInOut(state.flipT);
+          if (state.flipT >= 1) {
+            state.flipFrom = state.flipTo;
+            state.flipTo = state.flipFrom + 180 * Math.sign(state.speed);
+            state.flipT = 0;
+            state.holding = state.hold;
+          }
+        }
+      }
+      state.angle %= 3600;
+    }
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  function restartFlip() {
+    // start the next leg from wherever we are now
+    state.flipFrom = state.angle;
+    state.flipTo = state.angle + 180 * (Math.sign(state.speed) || 1);
+    state.flipT = 0;
+    state.holding = state.hold;
+  }
+
+  // ---- controls ----
+  function setPaused(p) { state.paused = p; $('pause').textContent = p ? 'play' : 'pause'; }
+  $('pause').onclick = () => setPaused(!state.paused);
+
+  $('speed').oninput = e => {
+    state.speed = +e.target.value;
+    $('speedOut').textContent = state.speed + '°/s';
+    if (state.mode === 'flip' && state.flipT === 0) restartFlip();
+  };
+  $('speedOut').textContent = state.speed + '°/s';
+  $('hold').oninput = e => { state.hold = +e.target.value; $('holdOut').textContent = state.hold + 's'; };
+  $('mode').onchange = e => {
+    state.mode = e.target.value;
+    if (state.mode === 'flip') { restartFlip(); state.holding = 0; }
+  };
+  $('fit').onchange = e => { state.fit = e.target.value; };
+
+  document.querySelectorAll('[data-snap]').forEach(b => b.onclick = () => {
+    state.angle = +b.dataset.snap;
+    restartFlip();
+  });
+
+  function loadFile(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      state.image = img;
+      state.imgW = img.naturalWidth; state.imgH = img.naturalHeight;
+      // fill the exposed area with the picture's corner colour so the rotation looks seamless
+      try {
+        const c = document.createElement('canvas'); c.width = c.height = 1;
+        const cx = c.getContext('2d'); cx.drawImage(img, 0, 0, 1, 1, 0, 0, 1, 1);
+        const [r, g, b] = cx.getImageData(0, 0, 1, 1).data;
+        state.bg = `rgb(${r},${g},${b})`;
+      } catch { state.bg = '#000'; }
+      document.body.style.background = state.bg;
+    };
+    img.src = url;
+  }
+  $('file').onchange = e => loadFile(e.target.files[0]);
+  $('builtin').onclick = () => {
+    state.image = null; state.imgW = W0; state.imgH = H0; state.bg = BG;
+    document.body.style.background = BG;
+  };
+  addEventListener('dragover', e => e.preventDefault());
+  addEventListener('drop', e => { e.preventDefault(); loadFile(e.dataTransfer.files[0]); });
+
+  // drag to rotate: track the pointer's angle around the screen centre
+  let grabAngle = 0;
+  const pointerAngle = e => Math.atan2(e.clientY - innerHeight / 2, e.clientX - innerWidth / 2) * 180 / Math.PI;
+  canvas.addEventListener('pointerdown', e => {
+    dragging = true; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId);
+    grabAngle = pointerAngle(e) - state.angle;
+  });
+  canvas.addEventListener('pointermove', e => { if (dragging) state.angle = pointerAngle(e) - grabAngle; });
+  const endDrag = () => { if (!dragging) return; dragging = false; canvas.classList.remove('dragging'); restartFlip(); };
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+
+  addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    const k = e.key.toLowerCase();
+    if (k === ' ') { e.preventDefault(); setPaused(!state.paused); }
+    else if (k === 'arrowleft')  { state.angle -= e.shiftKey ? 15 : 1; restartFlip(); }
+    else if (k === 'arrowright') { state.angle += e.shiftKey ? 15 : 1; restartFlip(); }
+    else if (k === '0') { state.angle = 0; restartFlip(); }
+    else if (k === 'h') $('panel').classList.toggle('hidden');
+  });
+
+  restartFlip();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
